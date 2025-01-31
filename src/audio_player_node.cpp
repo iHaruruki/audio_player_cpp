@@ -4,6 +4,7 @@
 #include <cstdlib> // for system()
 #include <string>
 #include <sstream>
+#include <sys/stat.h> // 追加
 
 class AudioPlayerNode : public rclcpp::Node
 {
