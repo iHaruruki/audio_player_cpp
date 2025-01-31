@@ -9,10 +9,15 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(SDL2 REQUIRED)
+
+include_directories(${SDL2_INCLUDE_DIRS})
 
 add_executable(audio_player_node src/audio_player_node.cpp)
 
 ament_target_dependencies(audio_player_node rclcpp std_msgs)
+
+target_link_libraries(audio_player_node ${SDL2_LIBRARIES})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
