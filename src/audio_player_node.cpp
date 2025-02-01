@@ -1,53 +1,60 @@
 // src/audio_player_node.cpp
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
-#include <cstdlib>      // for system()
+#include <cstdlib>      // system() 用
 #include <string>
-#include <sys/stat.h>   // for stat()
-#include <thread>       // for std::thread
-#include <mutex>        // for std::mutex
-#include <vector>       // for std::vector
+#include <sys/stat.h>   // stat() 用
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
 
 class AudioPlayerNode : public rclcpp::Node
 {
 public:
-    AudioPlayerNode() : Node("audio_player_node")
+    AudioPlayerNode() : Node("audio_player_node"), shutdown_flag_(false)
     {
-        // '/play_audio' トピックを購読
+        // "/play_audio" トピックを購読（メッセージは音声ファイルのパス）
         subscription_ = this->create_subscription<std_msgs::msg::String>(
             "play_audio",
             10,
             std::bind(&AudioPlayerNode::topic_callback, this, std::placeholders::_1));
 
-        RCLCPP_INFO(this->get_logger(), "Audio Player Node has been started and is listening to /play_audio topic.");
+        RCLCPP_INFO(this->get_logger(), "Audio Player Node started, listening on /play_audio topic.");
+
+        // 再生リクエストを処理する専用スレッドを起動
+        playback_thread_ = std::thread(&AudioPlayerNode::playback_loop, this);
     }
 
     ~AudioPlayerNode()
     {
-        // 全ての再生スレッドが終了するのを待つ
-        std::lock_guard<std::mutex> lock(mutex_);
-        for (auto &t : threads_)
         {
-            if (t.joinable())
-            {
-                t.join();
-            }
+            // shutdown_flag_ を true にしてループ終了を促す
+            std::lock_guard<std::mutex> lock(queue_mutex_);
+            shutdown_flag_ = true;
+        }
+        queue_cond_.notify_all();
+        if (playback_thread_.joinable()) {
+            playback_thread_.join();
         }
     }
 
 private:
+    // トピックから音声ファイルパスを受信したときのコールバック
     void topic_callback(const std_msgs::msg::String::SharedPtr msg)
     {
         std::string audio_path = msg->data;
         RCLCPP_INFO(this->get_logger(), "Received request to play audio: '%s'", audio_path.c_str());
 
-        // 音声ファイルの存在確認
         if (file_exists(audio_path))
         {
-            // 非同期で音声を再生
-            std::lock_guard<std::mutex> lock(mutex_);
-            threads_.emplace_back(&AudioPlayerNode::play_audio, this, audio_path);
-            RCLCPP_INFO(this->get_logger(), "Started asynchronous playback for: '%s'", audio_path.c_str());
+            // 再生リクエストをキューに追加
+            {
+                std::lock_guard<std::mutex> lock(queue_mutex_);
+                playback_queue_.push(audio_path);
+                RCLCPP_INFO(this->get_logger(), "Queued audio file: '%s'", audio_path.c_str());
+            }
+            queue_cond_.notify_one();
         }
         else
         {
@@ -55,7 +62,32 @@ private:
         }
     }
 
-    // 音声再生を別スレッドで実行
+    // 専用スレッド内でキューの再生リクエストを順次処理するループ
+    void playback_loop()
+    {
+        while (true)
+        {
+            std::string next_audio;
+            {
+                std::unique_lock<std::mutex> lock(queue_mutex_);
+                // キューに要素があるか、または shutdown_flag_ が true になるまで待つ
+                queue_cond_.wait(lock, [this]{
+                    return !playback_queue_.empty() || shutdown_flag_;
+                });
+
+                // shutdown_flag_ が立ち、かつキューが空の場合はループを抜ける
+                if (shutdown_flag_ && playback_queue_.empty()) {
+                    break;
+                }
+                next_audio = playback_queue_.front();
+                playback_queue_.pop();
+            }
+            // 1件分の音声再生を実行（再生が終わるまで system() がブロッキングする）
+            play_audio(next_audio);
+        }
+    }
+
+    // 指定された音声ファイルの再生を実行する関数
     void play_audio(const std::string &audio_path)
     {
         std::string command;
@@ -73,7 +105,7 @@ private:
             return;
         }
 
-        RCLCPP_INFO(this->get_logger(), "Executing command: %s", command.c_str());
+        RCLCPP_INFO(this->get_logger(), "Playing audio: '%s'", audio_path.c_str());
         int ret = system(command.c_str());
         if (ret == -1)
         {
@@ -83,20 +115,16 @@ private:
         {
             RCLCPP_INFO(this->get_logger(), "Finished playing audio: '%s'", audio_path.c_str());
         }
-
-        // スレッドが終了したら削除するために mutex を使用
-        std::lock_guard<std::mutex> lock(mutex_);
-        // スレッドが終了した後は特に操作は不要
     }
 
-    // ファイル存在確認関数
+    // 指定されたパスにファイルが存在するか確認する関数
     bool file_exists(const std::string &path)
     {
         struct stat buffer;
         return (stat(path.c_str(), &buffer) == 0);
     }
 
-    // サフィックス確認関数
+    // 文字列が指定されたサフィックスで終わるか確認する関数
     bool has_suffix(const std::string &str, const std::string &suffix)
     {
         if (str.length() >= suffix.length())
@@ -110,8 +138,11 @@ private:
     }
 
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr subscription_;
-    std::vector<std::thread> threads_;
-    std::mutex mutex_;
+    std::queue<std::string> playback_queue_;
+    std::mutex queue_mutex_;
+    std::condition_variable queue_cond_;
+    std::thread playback_thread_;
+    bool shutdown_flag_;
 };
 
 int main(int argc, char *argv[])
