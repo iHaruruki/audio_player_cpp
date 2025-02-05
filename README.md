@@ -29,8 +29,11 @@ flowchart LR
     ros2 topic pub /play_audio std_msgs/String "data: '/absolute/path/to/your/sample_audio.wav'"
     #または MP3 ファイルの場合
     ros2 topic pub /play_audio std_msgs/String "data: '/absolute/path/to/your/sample_audio.mp3'"
+    #for example
+    ros2 topic pub /play_audio atd_msgs/String "data: '/audio/sample.mp3'"
 
 ## License
 ## Authors
 ## References
 audio_player_cpp/audio/sample.mp3
+https://pixabay.com/ja/music/search/sample/
